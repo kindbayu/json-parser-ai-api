@@ -1,8 +1,8 @@
 """
-data_gen.py — PDF Sample Generator untuk PT Multisari Indoprima
-Menghasilkan dua file PDF di folder data/:
-  1. sample_po.pdf   — Purchase Order B2B dari PT Sentosa Aromatics
-  2. msds_sample.pdf — Material Safety Data Sheet bahan wewangian LUZI AG
+data_gen.py — Sample PDF Generator for AI Engine
+Generates two sample PDF files in the data/ folder:
+  1. sample_po.pdf   — Sample B2B Purchase Order
+  2. sample_docs.pdf — Sample technical document (Safety Data Sheet)
 """
 
 import os
@@ -495,5 +495,5 @@ def generate_msds_sample(path: str):
 if __name__ == "__main__":
     print("Generating sample PDF files...")
     generate_sample_po(os.path.join(OUTPUT_DIR, "sample_po.pdf"))
-    generate_msds_sample(os.path.join(OUTPUT_DIR, "msds_sample.pdf"))
+    generate_msds_sample(os.path.join(OUTPUT_DIR, "sample_docs.pdf"))
     print("\nDone! Files saved to:", OUTPUT_DIR)

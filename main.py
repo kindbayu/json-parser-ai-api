@@ -1,9 +1,9 @@
 """
-main.py — PT Multisari Indoprima AI Service API
-================================================
-FastAPI entry point yang mengintegrasikan:
+main.py — AI Engine API
+=======================
+Universal FastAPI entry point:
   • PO Parser   : POST /api/v1/extract-po
-  • MSDS RAG    : POST /api/v1/query-msds
+  • Document RAG: POST /api/v1/query-docs
   • Legacy RAG  : /rag/*
   • Legacy PDF  : /pdf/*
 """
@@ -29,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("indoprima.main")
+logger = logging.getLogger("ai_engine.main")
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
     from pathlib import Path
     data_dir = Path(__file__).parent / "data"
     data_dir.mkdir(exist_ok=True)
-    if not (data_dir / "sample_po.pdf").exists() or not (data_dir / "msds_sample.pdf").exists():
+    if not (data_dir / "sample_po.pdf").exists() or not (data_dir / "sample_docs.pdf").exists():
         logger.info("Sample PDF tidak ditemukan — generating via data_gen.py...")
         import data_gen  # noqa: F401 — side effect: generates PDFs
 
@@ -80,52 +80,51 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="PT Multisari Indoprima - AI Service API",
+    title=os.getenv("APP_TITLE", "AI Engine API"),
     version=os.getenv("APP_VERSION", "1.0.0"),
     description="""
-## AI Engine Microservice — PT Multisari Indoprima
+## AI Engine — Universal Document Intelligence API
 
-REST API untuk dua fungsi utama operasional B2B.
-**Stack v3 — Groq (cloud) atau Ollama (lokal), 100% Gratis.**
+A universal REST API for document processing and knowledge retrieval.
 
 ### 🧾 Purchase Order Parser
-Ekstrak data terstruktur (nomor PO, nama klien, line items, harga) dari PDF Purchase Order
-menggunakan **LLM** (Groq/Ollama) + prompt engineering + Pydantic v2.
+Extract structured data (PO number, client, line items, prices) from any PDF Purchase Order
+using LLM + prompt engineering + Pydantic v2.
 
-### 🔬 MSDS RAG Assistant
-Jawab pertanyaan teknis seputar Material Safety Data Sheet (MSDS) bahan wewangian
-menggunakan **RAG** berbasis ChromaDB + HuggingFace Embeddings + LLM.
+### 🔬 Document RAG Assistant
+Answer questions from any ingested PDF document
+using Retrieval-Augmented Generation with ChromaDB + HuggingFace Embeddings + LLM.
 
 ---
-**Stack:** FastAPI · LangChain · ChromaDB · Groq · HuggingFace (MiniLM-L6-v2) · Pydantic v2
+**Stack:** FastAPI · LangChain · ChromaDB · Groq / Ollama · HuggingFace (MiniLM-L6-v2) · Pydantic v2
 """,
     contact={
-        "name":  "PT Multisari Indoprima — IT Division",
-        "email": "dev@multisariindoprima.co.id",
+        "name":  "AI Engine API",
+        "email": os.getenv("CONTACT_EMAIL", "admin@example.com"),
     },
     license_info={
-        "name": "Proprietary — PT Multisari Indoprima",
+        "name": "MIT",
     },
     openapi_tags=[
         {
             "name": "PO Parser",
-            "description": "Ekstraksi Purchase Order dari PDF ke JSON terstruktur.",
+            "description": "Extract structured data from Purchase Order PDFs.",
         },
         {
-            "name": "MSDS RAG",
-            "description": "Tanya jawab berbasis dokumen MSDS menggunakan RAG.",
+            "name": "Document RAG",
+            "description": "Question answering from ingested documents using RAG.",
         },
         {
             "name": "RAG (Legacy)",
-            "description": "General-purpose RAG — ingest & query koleksi ChromaDB.",
+            "description": "General-purpose RAG — ingest & query ChromaDB collections.",
         },
         {
             "name": "PDF (Legacy)",
-            "description": "Parse dan generate PDF generik.",
+            "description": "Parse and generate generic PDFs.",
         },
         {
             "name": "Health",
-            "description": "Status dan info API.",
+            "description": "API status and info.",
         },
     ],
     lifespan=lifespan,
@@ -174,10 +173,10 @@ class MSDSQueryRequest(BaseModel):
     question: str = Field(
         ...,
         min_length=5,
-        description="Pertanyaan tentang dokumen MSDS",
-        examples=["Apa tindakan pertolongan pertama jika terkena Linalool di mata?"],
+        description="Question about the ingested documents",
+        examples=["What are the first aid measures for eye contact?"],
     )
-    k: int = Field(default=4, ge=1, le=10, description="Jumlah chunk konteks (1–10)")
+    k: int = Field(default=4, ge=1, le=10, description="Number of context chunks to retrieve (1–10)")
 
 
 class SourceDocumentOut(BaseModel):
@@ -233,7 +232,7 @@ async def root():
     """Cek status API dan versi yang berjalan."""
     return {
         "status":  "ok",
-        "service": "PT Multisari Indoprima - AI Service API",
+        "service": os.getenv("APP_TITLE", "AI Engine API"),
         "version": os.getenv("APP_VERSION", "1.0.0"),
     }
 
@@ -349,24 +348,23 @@ async def extract_po(
 @app.post(
     "/api/v1/query-msds",
     response_model=MSDSQueryResponse,
-    tags=["MSDS RAG"],
-    summary="Tanya jawab berbasis dokumen MSDS",
+    tags=["Document RAG"],
+    summary="Question answering from ingested documents",
     status_code=status.HTTP_200_OK,
     responses={
-        200: {"description": "Jawaban berhasil dihasilkan"},
-        500: {"description": "Gagal query RAG atau Ollama tidak dapat dihubungi"},
+        200: {"description": "Answer generated successfully"},
+        500: {"description": "RAG query failed or LLM unavailable"},
     },
 )
 async def query_msds(request: MSDSQueryRequest):
     """
-    Ajukan pertanyaan teknis tentang bahan kimia/wewangian berdasarkan
-    dokumen **MSDS** yang sudah diingesti ke ChromaDB.
+    Ask any question against documents ingested into ChromaDB.
 
-    Contoh pertanyaan:
-    - *"Apa tindakan pertolongan pertama jika terkena Linalool di mata?"*
-    - *"Berapa titik nyala (flash point) Linalool?"*
-    - *"Bagaimana cara membuang limbah Linalool dengan benar?"*
-    - *"Apa APD yang dibutuhkan saat menangani bahan ini?"*
+    Examples:
+    - *"What are the first aid measures for eye contact?"*
+    - *"What is the flash point of this substance?"*
+    - *"How should this material be stored?"*
+    - *"What PPE is required when handling this material?"*
     """
     msds_rag = app.state.msds_rag
     try:

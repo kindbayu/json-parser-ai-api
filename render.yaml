@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: indoprima-ai-api
+    name: ai-engine-api
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python data_gen.py
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: LLM_PROVIDER
@@ -15,10 +15,10 @@ services:
       - key: CHROMA_PERSIST_DIRECTORY
         value: ./data/chroma_db
       - key: APP_TITLE
-        value: AI Engine API - PT Multisari Indoprima
+        value: AI Engine API
       - key: APP_VERSION
         value: 3.0.0
       - key: DEBUG
         value: "False"
       - key: GROQ_API_KEY
-        sync: false   # diisi manual di Render dashboard (rahasia)
+        sync: false   # set manually in Render dashboard

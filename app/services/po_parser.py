@@ -1,8 +1,8 @@
 """
 app/services/po_parser.py
 =========================
-Purchase Order Parser — PT Multisari Indoprima AI Engine
-Stack: ChatOllama (llama3.2) — 100% Gratis, Tanpa API Key
+Purchase Order Parser — Universal AI Engine
+Stack: LLM via factory (Groq or Ollama) — free, no paid API required
 
 Alur kerja:
   1. Terima bytes PDF dari caller

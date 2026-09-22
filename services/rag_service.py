@@ -1,10 +1,10 @@
 """
 services/rag_service.py
 =======================
-Legacy General-Purpose RAG Service — PT Multisari Indoprima
-Stack v3: HuggingFaceEmbeddings + LLM via factory (Groq atau Ollama)
+Legacy General-Purpose RAG Service — Universal AI Engine
+Stack v3: HuggingFaceEmbeddings + LLM via factory (Groq or Ollama)
 
-Dipertahankan untuk endpoint /rag/* (ingest, query, list/delete collections).
+Retained for /rag/* endpoints (ingest, query, list/delete collections).
 """
 
 from __future__ import annotations

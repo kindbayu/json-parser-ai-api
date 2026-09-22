@@ -1,7 +1,8 @@
 # ============================================================
-# PT Multisari Indoprima — AI Engine API v3.0
-# Deploy: Render.com (free tier)
-# LLM: Groq (cloud) atau Ollama (lokal)
+# AI Engine API v3.0
+# Universal Document Intelligence — FastAPI + LangChain
+# Deploy: Railway / Render (free tier)
+# LLM: Groq (cloud) or Ollama (local)
 # ============================================================
 
 # Web framework

@@ -1,12 +1,12 @@
 """
 test_api.py — Manual API Test Script
 =====================================
-Menguji semua endpoint PT Multisari Indoprima AI Service API.
+Tests all endpoints of the AI Engine API.
 
-Jalankan:
+Run:
     python test_api.py
 
-Pastikan server sudah berjalan di port 8000:
+Make sure the server is running on port 8000:
     venv\\Scripts\\uvicorn.exe main:app --host 127.0.0.1 --port 8000
 """
 
@@ -19,7 +19,7 @@ import requests
 
 BASE_URL   = "http://127.0.0.1:8000"
 PO_PDF     = Path(__file__).parent / "data" / "sample_po.pdf"
-MSDS_PDF   = Path(__file__).parent / "data" / "msds_sample.pdf"
+MSDS_PDF   = Path(__file__).parent / "data" / "sample_docs.pdf"
 PASS = "✅ PASS"
 FAIL = "❌ FAIL"
 SEP  = "─" * 60
@@ -132,9 +132,9 @@ def test_query_msds() -> bool:
     print(SEP)
 
     questions = [
-        "Apa tindakan pertolongan pertama jika terkena Linalool di mata?",
-        "Berapa titik nyala (flash point) Linalool?",
-        "Bagaimana cara menyimpan Linalool dengan benar?",
+        "What are the first aid measures for eye contact?",
+        "What is the flash point of this substance?",
+        "How should this material be stored properly?",
     ]
 
     all_ok = True
@@ -195,7 +195,7 @@ def test_pdf_parse() -> bool:
         with open(MSDS_PDF, "rb") as f:
             r = requests.post(
                 f"{BASE_URL}/pdf/parse",
-                files={"file": ("msds_sample.pdf", f, "application/pdf")},
+                files={"file": ("sample_docs.pdf", f, "application/pdf")},
                 timeout=15,
             )
     except Exception as e:
@@ -233,8 +233,8 @@ def test_list_collections() -> bool:
 # ──────────────────────────────────────────────────────────
 def main() -> None:
     print("\n" + "═" * 60)
-    print("  PT Multisari Indoprima — AI Service API Test Suite")
-    print("  Stack: Ollama (llama3.2) + HuggingFace + ChromaDB")
+    print("  AI Engine API — Universal Document Intelligence")
+    print("  Stack: Groq / Ollama + HuggingFace + ChromaDB")
     print("═" * 60)
 
     start = time.time()

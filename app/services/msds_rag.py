@@ -1,29 +1,23 @@
 """
 app/services/msds_rag.py
 ========================
-MSDS RAG Service — PT Multisari Indoprima AI Engine
-Stack: HuggingFaceEmbeddings (all-MiniLM-L6-v2) + ChatOllama (llama3.2)
-       100% Gratis, Tanpa API Key, Berjalan Lokal
+Document RAG Service — Universal AI Engine
+Stack: HuggingFaceEmbeddings (all-MiniLM-L6-v2) + LLM via factory (Groq or Ollama)
 
-Alur kerja:
-  Ingest (otomatis saat startup / on-demand):
-    1. Baca data/msds_sample.pdf menggunakan pypdf
-    2. Pecah teks dengan RecursiveCharacterTextSplitter (chunk=1000, overlap=200)
-    3. Embed dengan HuggingFaceEmbeddings all-MiniLM-L6-v2 (lokal ~90 MB)
-    4. Simpan ke ChromaDB persistent (./data/chroma_db)
+Workflow:
+  Ingest (auto on startup / on-demand):
+    1. Read PDF from data/sample_docs.pdf using pypdf
+    2. Split with RecursiveCharacterTextSplitter (chunk=1000, overlap=200)
+    3. Embed with HuggingFaceEmbeddings all-MiniLM-L6-v2 (local ~90 MB)
+    4. Store in ChromaDB persistent (./data/chroma_db)
 
-  Query (setiap request):
-    1. Similarity search ChromaDB → top-k chunks relevan
-    2. Susun konteks ke prompt RAG
-    3. Generate jawaban dengan ChatOllama (llama3.2)
-    4. Kembalikan answer + source_documents
+  Query (every request):
+    1. ChromaDB similarity search → top-k relevant chunks
+    2. Build context prompt
+    3. Generate answer with LLM (Groq or Ollama)
+    4. Return answer + source_documents
 
-Catatan:
-  - Model embedding diunduh sekali ke ~/.cache/huggingface/ lalu offline.
-  - Koleksi ChromaDB diberi nama "msds_hf" agar tidak konflik dengan
-    koleksi lama yang dibuat dengan OpenAI embeddings (dimensi berbeda).
-
-Dependensi:
+Dependencies:
   langchain, langchain-community, chromadb, sentence-transformers,
   pypdf, pydantic v2, python-dotenv
 """
@@ -41,7 +35,6 @@ from dotenv import load_dotenv
 from langchain.chains import RetrievalQA
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_ollama import ChatOllama
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import PromptTemplate
@@ -67,27 +60,26 @@ class RAGQueryResult(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# RAG Prompt  (eksplisit untuk model lokal agar tidak mengarang)
+# RAG Prompt
 # ---------------------------------------------------------------------------
 
 _RAG_PROMPT_TEMPLATE = """\
-Anda adalah asisten teknis ahli Material Safety Data Sheet (MSDS) \
-untuk PT Multisari Indoprima, perusahaan di industri parfum dan bahan kimia.
+You are a helpful assistant that answers questions strictly based on the provided document context.
 
-INSTRUKSI:
-- Jawab HANYA berdasarkan konteks MSDS yang diberikan di bawah.
-- Jika informasi tidak ada dalam konteks, katakan dengan jelas: \
-"Informasi tersebut tidak tersedia dalam dokumen MSDS yang dimuat."
-- Jangan mengarang atau menambahkan informasi di luar konteks.
-- Jawab dalam Bahasa Indonesia yang jelas, ringkas, dan profesional.
+INSTRUCTIONS:
+- Answer ONLY based on the context provided below.
+- If the information is not available in the context, clearly state:
+  "This information is not available in the loaded documents."
+- Do not fabricate or add information outside the context.
+- Be clear, concise, and professional.
 
---- KONTEKS MSDS ---
+--- DOCUMENT CONTEXT ---
 {context}
---- AKHIR KONTEKS ---
+--- END CONTEXT ---
 
-Pertanyaan: {question}
+Question: {question}
 
-Jawaban:\
+Answer:\
 """
 
 _RAG_PROMPT = PromptTemplate(
@@ -97,23 +89,22 @@ _RAG_PROMPT = PromptTemplate(
 
 
 # ---------------------------------------------------------------------------
-# MSDSRagService
+# DocumentRagService
 # ---------------------------------------------------------------------------
 
 class MSDSRagService:
     """
-    RAG service untuk dokumen MSDS menggunakan:
-    - HuggingFaceEmbeddings (all-MiniLM-L6-v2) — embedding lokal gratis
-    - ChatOllama (llama3.2)                     — LLM lokal gratis
-    - ChromaDB (persistent)                     — vector store lokal
+    Universal RAG service for any PDF document using:
+    - HuggingFaceEmbeddings (all-MiniLM-L6-v2) — local, free embeddings
+    - LLM via factory (Groq or Ollama)          — configurable via .env
+    - ChromaDB (persistent)                     — local vector store
 
-    Singleton-friendly: inisialisasi sekali di startup, panggil query() per request.
+    Singleton-friendly: initialize once at startup, call query() per request.
     """
 
-    DEFAULT_MSDS_PDF   = Path(__file__).resolve().parents[2] / "data" / "msds_sample.pdf"
+    DEFAULT_MSDS_PDF   = Path(__file__).resolve().parents[2] / "data" / "sample_docs.pdf"
     DEFAULT_CHROMA_DIR = Path(__file__).resolve().parents[2] / "data" / "chroma_db"
-    # Nama koleksi berbeda dari versi OpenAI (dimensi embedding berbeda = 384 vs 1536)
-    COLLECTION_NAME    = "msds_hf"
+    COLLECTION_NAME    = "documents"
 
     def __init__(
         self,
@@ -127,20 +118,17 @@ class MSDSRagService:
         self._chroma_dir.mkdir(parents=True, exist_ok=True)
 
         embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-        ollama_url      = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        ollama_model    = os.getenv("OLLAMA_MODEL", "llama3.2")
 
-        # HuggingFace embeddings — model diunduh sekali ke cache lokal
-        logger.info("Memuat HuggingFaceEmbeddings: %s", embedding_model)
+        logger.info("Loading HuggingFaceEmbeddings: %s", embedding_model)
         self._embeddings = HuggingFaceEmbeddings(
             model_name=embedding_model,
-            model_kwargs={"device": "cpu"},   # gunakan CPU (aman untuk semua mesin)
+            model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
         )
 
-        # LLM via factory (Groq atau Ollama tergantung LLM_PROVIDER di .env)
+        # LLM via factory (Groq or Ollama based on LLM_PROVIDER in .env)
         self._llm = get_llm(temperature=0.1)
-        logger.info("MSDSRagService siap — provider: %s", get_provider_name())
+        logger.info("DocumentRagService ready — provider: %s", get_provider_name())
 
         self._text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
@@ -151,12 +139,12 @@ class MSDSRagService:
         # Vectorstore — lazy-loaded
         self._vectorstore: Chroma | None = None
 
-        # Auto-ingest saat startup (non-fatal jika gagal)
+        # Auto-ingest on startup (non-fatal if it fails)
         try:
             self._ensure_ingested()
         except Exception as exc:
             logger.warning(
-                "Auto-ingest gagal — akan dicoba ulang saat query pertama. Detail: %s", exc
+                "Auto-ingest failed — will retry on first query. Detail: %s", exc
             )
 
     # ------------------------------------------------------------------
@@ -165,36 +153,28 @@ class MSDSRagService:
 
     def query(self, question: str, k: int = 4) -> RAGQueryResult:
         """
-        Jawab pertanyaan berdasarkan dokumen MSDS yang sudah diingesti.
+        Answer a question based on ingested documents.
 
         Parameters
         ----------
         question : str
-            Pertanyaan dalam Bahasa Indonesia atau Inggris.
+            Question in any language.
         k : int
-            Jumlah chunk konteks yang diambil dari ChromaDB (1–10).
+            Number of context chunks to retrieve from ChromaDB (1–10).
 
         Returns
         -------
         RAGQueryResult
-            Dict berisi 'answer' (str) dan 'source_documents' (list).
-
-        Raises
-        ------
-        ConnectionError
-            Jika Ollama tidak dapat dihubungi.
-        RuntimeError
-            Jika koleksi ChromaDB kosong dan ingest gagal.
+            Dict with 'answer' (str) and 'source_documents' (list).
         """
-        # Retry ingest jika koleksi belum ada (startup ingest mungkin gagal)
         if not self.collection_exists():
-            logger.info("Koleksi kosong — mencoba ingest ulang sebelum query...")
+            logger.info("Collection empty — retrying ingest before query...")
             self._ensure_ingested()
 
         if not self.collection_exists():
             raise RuntimeError(
-                "Koleksi MSDS belum ada di ChromaDB. "
-                "Pastikan data/msds_sample.pdf tersedia dan jalankan ingest_pdf() terlebih dahulu."
+                "Document collection not found in ChromaDB. "
+                "Ensure a PDF is available in data/ and call ingest_pdf()."
             )
 
         vectorstore = self._get_vectorstore()
@@ -210,14 +190,13 @@ class MSDSRagService:
             chain_type_kwargs={"prompt": _RAG_PROMPT},
         )
 
-        logger.info("RAG query (Ollama): %s", question[:120])
+        logger.info("RAG query: %s", question[:120])
         try:
             result = qa_chain.invoke({"query": question})
         except Exception as exc:
             raise ConnectionError(
-                f"Gagal mendapatkan jawaban dari Ollama. "
-                f"Pastikan Ollama berjalan dan model '{self._llm.model}' sudah di-pull. "
-                f"Detail: {exc}"
+                f"Failed to get answer from LLM. "
+                f"Check LLM_PROVIDER configuration. Detail: {exc}"
             ) from exc
 
         source_docs: list[SourceDocument] = [
@@ -225,41 +204,27 @@ class MSDSRagService:
             for doc in result.get("source_documents", [])
         ]
 
-        logger.info("RAG query selesai — %d source chunks digunakan.", len(source_docs))
+        logger.info("RAG query done — %d source chunks used.", len(source_docs))
         return RAGQueryResult(
             answer=result["result"],
             source_documents=source_docs,
         )
 
-    def ingest_pdf(
-        self,
-        pdf_bytes: bytes,
-        source_name: str = "msds_sample.pdf",
-    ) -> int:
+    def ingest_pdf(self, pdf_bytes: bytes, source_name: str = "document.pdf") -> int:
         """
-        Ingest PDF MSDS dari bytes ke ChromaDB menggunakan HuggingFace embeddings.
+        Ingest a PDF into ChromaDB using HuggingFace embeddings.
 
-        Parameters
-        ----------
-        pdf_bytes : bytes
-            Konten file PDF.
-        source_name : str
-            Nama sumber untuk metadata.
-
-        Returns
-        -------
-        int
-            Jumlah chunk yang berhasil disimpan.
+        Returns the number of chunks stored.
         """
         documents = self._parse_pdf_bytes(pdf_bytes, source_name)
         if not documents:
             raise ValueError(
-                f"Tidak ada teks yang dapat diekstrak dari '{source_name}'. "
-                "Pastikan PDF bukan hasil scan tanpa OCR."
+                f"No extractable text found in '{source_name}'. "
+                "Ensure the PDF is not a scanned image without OCR."
             )
 
         chunks = self._text_splitter.split_documents(documents)
-        logger.info("Ingesting %d chunks dari '%s' ke koleksi '%s'...",
+        logger.info("Ingesting %d chunks from '%s' into collection '%s'...",
                     len(chunks), source_name, self.COLLECTION_NAME)
 
         self._vectorstore = Chroma.from_documents(
@@ -269,11 +234,11 @@ class MSDSRagService:
             collection_name=self.COLLECTION_NAME,
         )
 
-        logger.info("Ingest selesai — %d chunks tersimpan ke ChromaDB.", len(chunks))
+        logger.info("Ingest complete — %d chunks stored in ChromaDB.", len(chunks))
         return len(chunks)
 
     def collection_exists(self) -> bool:
-        """Cek apakah koleksi MSDS sudah ada dan tidak kosong di ChromaDB."""
+        """Check if the document collection exists and is non-empty in ChromaDB."""
         try:
             client      = chromadb.PersistentClient(path=str(self._chroma_dir))
             collections = [c.name for c in client.list_collections()]
@@ -289,30 +254,29 @@ class MSDSRagService:
     # ------------------------------------------------------------------
 
     def _ensure_ingested(self) -> None:
-        """Auto-ingest msds_sample.pdf jika koleksi belum ada."""
+        """Auto-ingest sample_docs.pdf if collection doesn't exist."""
         if self.collection_exists():
-            logger.info("Koleksi '%s' sudah ada (%s chunks) — skip auto-ingest.",
-                        self.COLLECTION_NAME,
-                        chromadb.PersistentClient(path=str(self._chroma_dir))
-                               .get_collection(self.COLLECTION_NAME).count())
+            count = (chromadb.PersistentClient(path=str(self._chroma_dir))
+                             .get_collection(self.COLLECTION_NAME).count())
+            logger.info("Collection '%s' exists (%d chunks) — skipping auto-ingest.",
+                        self.COLLECTION_NAME, count)
             return
 
         if not self._msds_pdf_path.exists():
             logger.warning(
-                "File MSDS tidak ditemukan di '%s'. "
-                "Jalankan: python data_gen.py",
+                "Sample document not found at '%s'. Run: python data_gen.py",
                 self._msds_pdf_path,
             )
             return
 
-        logger.info("Memulai auto-ingest '%s' → ChromaDB '%s'...",
+        logger.info("Auto-ingesting '%s' → ChromaDB collection '%s'...",
                     self._msds_pdf_path.name, self.COLLECTION_NAME)
         pdf_bytes     = self._msds_pdf_path.read_bytes()
         chunks_stored = self.ingest_pdf(pdf_bytes, source_name=self._msds_pdf_path.name)
-        logger.info("Auto-ingest selesai: %d chunks.", chunks_stored)
+        logger.info("Auto-ingest complete: %d chunks.", chunks_stored)
 
     def _get_vectorstore(self) -> Chroma:
-        """Lazy-load ChromaDB vectorstore dengan HuggingFace embeddings."""
+        """Lazy-load ChromaDB vectorstore with HuggingFace embeddings."""
         if self._vectorstore is None:
             self._vectorstore = Chroma(
                 persist_directory=str(self._chroma_dir),
@@ -323,7 +287,7 @@ class MSDSRagService:
 
     @staticmethod
     def _parse_pdf_bytes(pdf_bytes: bytes, source_name: str) -> list[Document]:
-        """Ekstrak teks dari PDF bytes → list[Document] (satu Document per halaman)."""
+        """Extract text from PDF bytes → list[Document] (one per page)."""
         reader    = PdfReader(io.BytesIO(pdf_bytes))
         documents: list[Document] = []
         for page_num, page in enumerate(reader.pages, start=1):
@@ -333,5 +297,5 @@ class MSDSRagService:
                     page_content=text,
                     metadata={"source": source_name, "page": page_num},
                 ))
-        logger.debug("Parsed '%s': %d halaman dengan teks.", source_name, len(documents))
+        logger.debug("Parsed '%s': %d pages with text.", source_name, len(documents))
         return documents

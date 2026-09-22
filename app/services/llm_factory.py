@@ -1,14 +1,14 @@
 """
 app/services/llm_factory.py
 ============================
-LLM Factory — PT Multisari Indoprima AI Engine
+LLM Factory — Universal AI Engine
 
-Mengembalikan instance LLM yang sesuai berdasarkan LLM_PROVIDER di .env:
-  - "groq"   → ChatGroq  (cloud, gratis, cepat — recommended untuk deploy)
-  - "ollama" → ChatOllama (lokal, gratis, lambat tanpa GPU)
+Returns an LLM instance based on LLM_PROVIDER in .env:
+  - "groq"   → ChatGroq  (cloud, free, fast — recommended for deployment)
+  - "ollama" → ChatOllama (local, free, slow without GPU)
 
-Semua service menggunakan get_llm() agar provider bisa diganti
-hanya dengan mengubah satu baris di .env tanpa menyentuh kode.
+All services use get_llm() so the provider can be switched
+by changing a single line in .env without touching any code.
 """
 
 from __future__ import annotations
