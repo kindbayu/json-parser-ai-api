@@ -50,7 +50,7 @@ def get_llm(temperature: float = 0, **kwargs) -> BaseChatModel:
 
     if provider == "groq":
         api_key = os.getenv("GROQ_API_KEY", "")
-        model   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+        model   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
         if not api_key or api_key == "gsk_your_groq_api_key_here":
             raise EnvironmentError(
@@ -92,5 +92,5 @@ def get_provider_name() -> str:
     """Kembalikan nama provider aktif untuk logging/health check."""
     provider = os.getenv("LLM_PROVIDER", "groq").lower().strip()
     if provider == "groq":
-        return f"Groq ({os.getenv('GROQ_MODEL', 'llama-3.1-8b-instant')})"
+        return f"Groq ({os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')})"
     return f"Ollama ({os.getenv('OLLAMA_MODEL', 'qwen2.5:1.5b')})"
