@@ -1,7 +1,7 @@
 # ============================================================
-# PT Multisari Indoprima — AI Engine API v2.0
-# Stack 100% Gratis: Ollama + HuggingFace + ChromaDB
-# Python >= 3.13 | Tanpa OpenAI / API key berbayar
+# PT Multisari Indoprima — AI Engine API v3.0
+# Deploy: Render.com (free tier)
+# LLM: Groq (cloud) atau Ollama (lokal)
 # ============================================================
 
 # Web framework
@@ -11,23 +11,28 @@ uvicorn[standard]==0.34.3
 # Data validation
 pydantic==2.11.5
 
-# LangChain core + community (Ollama, HuggingFace, ChromaDB)
+# LangChain core + community
 langchain==0.3.25
 langchain-community==0.3.24
 
-# Vector database (lokal, persistent)
+# LLM providers
+langchain-groq==0.3.2
+langchain-ollama==0.3.3
+
+# HuggingFace embeddings
+langchain-huggingface==0.1.2
+sentence-transformers==6.0.1
+
+# Vector database
 chromadb==0.6.3
 
 # PDF processing
 pypdf==5.4.0
 
-# Local embeddings — HuggingFace all-MiniLM-L6-v2
-sentence-transformers==6.0.1
-
 # Environment variables
 python-dotenv==1.1.0
 
-# Form & file upload support (required by FastAPI for UploadFile/Form)
+# Form & file upload
 python-multipart==0.0.20
 
 # PDF generation

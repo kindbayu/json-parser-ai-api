@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: indoprima-ai-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: EMBEDDING_MODEL
+        value: all-MiniLM-L6-v2
+      - key: CHROMA_PERSIST_DIRECTORY
+        value: ./data/chroma_db
+      - key: APP_TITLE
+        value: AI Engine API - PT Multisari Indoprima
+      - key: APP_VERSION
+        value: 3.0.0
+      - key: DEBUG
+        value: "False"
+      - key: GROQ_API_KEY
+        sync: false   # diisi manual di Render dashboard (rahasia)

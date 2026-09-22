@@ -1,0 +1,26 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Environment — JANGAN pernah commit file ini (berisi API key)
+.env
+
+# Data — ChromaDB dan file temp tidak perlu di-commit
+data/chroma_db/
+temp/
+*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

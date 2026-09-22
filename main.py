@@ -47,12 +47,21 @@ TEMP_DIR.mkdir(exist_ok=True)
 async def lifespan(app: FastAPI):
     logger.info("⚙️  Memulai inisialisasi services...")
 
+    # Auto-generate sample PDFs jika belum ada (penting untuk Render deploy)
+    from pathlib import Path
+    data_dir = Path(__file__).parent / "data"
+    data_dir.mkdir(exist_ok=True)
+    if not (data_dir / "sample_po.pdf").exists() or not (data_dir / "msds_sample.pdf").exists():
+        logger.info("Sample PDF tidak ditemukan — generating via data_gen.py...")
+        import data_gen  # noqa: F401 — side effect: generates PDFs
+
     # New services (spec.md)
     from app.services.msds_rag import MSDSRagService
     from app.services.po_parser import POParser
+    from app.services.llm_factory import get_provider_name
 
     app.state.po_parser   = POParser()
-    app.state.msds_rag    = MSDSRagService()      # auto-ingest msds_sample.pdf jika belum ada
+    app.state.msds_rag    = MSDSRagService()
 
     # Legacy services
     from services.pdf_service import PDFService
@@ -61,7 +70,7 @@ async def lifespan(app: FastAPI):
     app.state.rag_service = RAGService()
     app.state.pdf_service = PDFService()
 
-    logger.info("✅ Semua services siap.")
+    logger.info("✅ Semua services siap — LLM: %s", get_provider_name())
     yield
     logger.info("🛑 AI Service API dimatikan.")
 
@@ -76,18 +85,19 @@ app = FastAPI(
     description="""
 ## AI Engine Microservice — PT Multisari Indoprima
 
-REST API untuk dua fungsi utama operasional B2B:
+REST API untuk dua fungsi utama operasional B2B.
+**Stack v3 — Groq (cloud) atau Ollama (lokal), 100% Gratis.**
 
 ### 🧾 Purchase Order Parser
-Ekstrak data terstruktur (nomor PO, nama klien, line items, harga) dari file PDF Purchase Order
-secara otomatis menggunakan **GPT-4o-mini** dengan _structured output_.
+Ekstrak data terstruktur (nomor PO, nama klien, line items, harga) dari PDF Purchase Order
+menggunakan **LLM** (Groq/Ollama) + prompt engineering + Pydantic v2.
 
 ### 🔬 MSDS RAG Assistant
 Jawab pertanyaan teknis seputar Material Safety Data Sheet (MSDS) bahan wewangian
-menggunakan **Retrieval-Augmented Generation** berbasis **ChromaDB + OpenAI**.
+menggunakan **RAG** berbasis ChromaDB + HuggingFace Embeddings + LLM.
 
 ---
-**Stack:** FastAPI · LangChain · ChromaDB · OpenAI · Pydantic v2 · pypdf
+**Stack:** FastAPI · LangChain · ChromaDB · Groq · HuggingFace (MiniLM-L6-v2) · Pydantic v2
 """,
     contact={
         "name":  "PT Multisari Indoprima — IT Division",
@@ -234,7 +244,12 @@ async def root():
     summary="Detail health check",
 )
 async def health_check():
-    return {"status": "healthy"}
+    from app.services.llm_factory import get_provider_name
+    return {
+        "status":   "healthy",
+        "llm":      get_provider_name(),
+        "provider": os.getenv("LLM_PROVIDER", "ollama"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +354,7 @@ async def extract_po(
     status_code=status.HTTP_200_OK,
     responses={
         200: {"description": "Jawaban berhasil dihasilkan"},
-        500: {"description": "Gagal query RAG atau koneksi OpenAI"},
+        500: {"description": "Gagal query RAG atau Ollama tidak dapat dihubungi"},
     },
 )
 async def query_msds(request: MSDSQueryRequest):

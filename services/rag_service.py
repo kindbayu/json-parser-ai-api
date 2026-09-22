@@ -2,7 +2,7 @@
 services/rag_service.py
 =======================
 Legacy General-Purpose RAG Service — PT Multisari Indoprima
-Stack v2: HuggingFaceEmbeddings + ChatOllama (100% Gratis, Tanpa OpenAI)
+Stack v3: HuggingFaceEmbeddings + LLM via factory (Groq atau Ollama)
 
 Dipertahankan untuk endpoint /rag/* (ingest, query, list/delete collections).
 """
@@ -18,9 +18,9 @@ from dotenv import load_dotenv
 from langchain.chains import RetrievalQA
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.chat_models import ChatOllama
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
+from app.services.llm_factory import get_llm, get_provider_name
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -28,23 +28,18 @@ logger = logging.getLogger(__name__)
 
 class RAGService:
     def __init__(self) -> None:
-        embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-        ollama_url      = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        ollama_model    = os.getenv("OLLAMA_MODEL", "llama3.2")
+        embedding_model        = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         self.persist_directory = os.getenv("CHROMA_PERSIST_DIRECTORY", "./data/chroma_db")
 
-        logger.info("RAGService (legacy) — embedding: %s, llm: %s", embedding_model, ollama_model)
+        logger.info("RAGService (legacy) — embedding: %s, llm: %s",
+                    embedding_model, get_provider_name())
 
         self.embeddings = HuggingFaceEmbeddings(
             model_name=embedding_model,
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
         )
-        self.llm = ChatOllama(
-            model=ollama_model,
-            base_url=ollama_url,
-            temperature=0.2,
-        )
+        self.llm = get_llm(temperature=0.2)
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,

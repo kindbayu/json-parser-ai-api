@@ -41,11 +41,12 @@ from dotenv import load_dotenv
 from langchain.chains import RetrievalQA
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.chat_models import ChatOllama
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_ollama import ChatOllama
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import PromptTemplate
 from pypdf import PdfReader
+from app.services.llm_factory import get_llm, get_provider_name
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -137,13 +138,9 @@ class MSDSRagService:
             encode_kwargs={"normalize_embeddings": True},
         )
 
-        # Ollama LLM
-        self._llm = ChatOllama(
-            model=ollama_model,
-            base_url=ollama_url,
-            temperature=0.1,
-            num_predict=2048,
-        )
+        # LLM via factory (Groq atau Ollama tergantung LLM_PROVIDER di .env)
+        self._llm = get_llm(temperature=0.1)
+        logger.info("MSDSRagService siap — provider: %s", get_provider_name())
 
         self._text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,

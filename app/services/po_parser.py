@@ -29,10 +29,11 @@ import re
 from typing import Optional
 
 from dotenv import load_dotenv
-from langchain_community.chat_models import ChatOllama
+from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, ValidationError
 from pypdf import PdfReader
+from app.services.llm_factory import get_llm, get_provider_name
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -73,50 +74,47 @@ class POExtractResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-Anda adalah sistem ekstraksi data Purchase Order (PO). \
-Tugas Anda adalah membaca teks dokumen PO dan mengembalikan HANYA objek JSON \
-yang valid — tanpa penjelasan, tanpa markdown, tanpa teks di luar JSON.
+Anda adalah sistem ekstraksi data Purchase Order (PO).
+Baca teks dokumen PO dan kembalikan HANYA objek JSON berisi data NYATA dari dokumen.
+Jangan gunakan placeholder. Isi setiap field dengan nilai yang ada di dokumen.
 
-SKEMA JSON yang harus dikembalikan:
+CONTOH FORMAT OUTPUT (gunakan nilai nyata dari dokumen, bukan contoh ini):
 {
-  "po_number": "string",
-  "client_name": "string",
-  "client_address": "string atau null",
-  "order_date": "YYYY-MM-DD atau null",
-  "delivery_date": "YYYY-MM-DD atau null",
+  "po_number": "PO-2026-00123",
+  "client_name": "PT Sentosa Aromatics",
+  "client_address": "Jl. Industri Raya No. 45, Tangerang",
+  "order_date": "2026-09-10",
+  "delivery_date": "2026-09-20",
   "items": [
     {
-      "line_no": integer,
-      "item_code": "string",
-      "description": "string",
-      "quantity": number,
-      "unit": "string",
-      "unit_price": number,
-      "total_price": number
+      "line_no": 1,
+      "item_code": "ARO-LV-001",
+      "description": "Lavender Essential Oil 100ml",
+      "quantity": 50,
+      "unit": "Botol",
+      "unit_price": 85000,
+      "total_price": 4250000
     }
   ],
-  "total_amount": number atau null,
+  "total_amount": 32300000,
   "currency": "IDR",
-  "notes": "string atau null"
+  "notes": "Harap sertakan CoA untuk setiap item."
 }
 
-ATURAN PENTING:
-- Ekstrak SEMUA baris item — jangan ada yang terlewat.
-- Jika informasi tidak ada dalam dokumen, gunakan null.
-- Harga harus angka numerik murni (tanpa simbol Rp, titik ribuan, atau koma desimal).
-- item_code harus persis seperti yang tertulis di dokumen.
-- Tanggal: konversi ke YYYY-MM-DD jika memungkinkan.
-- Kembalikan HANYA JSON, mulai dari { dan akhiri dengan }.\
+ATURAN:
+1. Ganti semua nilai contoh di atas dengan nilai NYATA dari dokumen.
+2. Ekstrak SEMUA baris item yang ada — jangan ada yang terlewat.
+3. Harga = angka murni tanpa simbol mata uang, titik ribuan, atau koma desimal.
+4. Jika suatu field tidak ada dalam dokumen, gunakan null.
+5. Kembalikan HANYA JSON — tidak ada teks sebelum { atau sesudah }.\
 """
 
 _HUMAN_TEMPLATE = """\
-Ekstrak data Purchase Order dari teks dokumen berikut:
+Dokumen Purchase Order:
 
---- TEKS DOKUMEN ---
 {document_text}
---- AKHIR TEKS ---
 
-Kembalikan HANYA objek JSON sesuai skema di atas:\
+Ekstrak semua data dari dokumen di atas dan kembalikan sebagai JSON:\
 """
 
 
@@ -170,17 +168,8 @@ class POParser:
     """
 
     def __init__(self) -> None:
-        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        model    = os.getenv("OLLAMA_MODEL", "llama3.2")
-
-        self._llm = ChatOllama(
-            model=model,
-            base_url=base_url,
-            temperature=0,       # deterministik untuk ekstraksi data
-            format="json",       # paksa Ollama mengembalikan JSON mode
-            num_predict=4096,    # cukup token untuk 7+ line items
-        )
-        logger.info("POParser siap — model: %s @ %s", model, base_url)
+        self._llm = get_llm(temperature=0)
+        logger.info("POParser siap — provider: %s", get_provider_name())
 
     # ------------------------------------------------------------------
     # Public API
@@ -220,6 +209,15 @@ class POParser:
                 "Pastikan PDF bukan hasil scan tanpa OCR."
             )
 
+        # Batasi panjang teks yang dikirim ke LLM.
+        # pypdf sering menghasilkan banyak whitespace dan noise layout.
+        # 3000 karakter pertama cukup untuk menangkap semua data PO standar.
+        MAX_CHARS = 3000
+        if len(text) > MAX_CHARS:
+            logger.info("Teks PDF dipotong dari %d → %d karakter untuk efisiensi LLM.",
+                        len(text), MAX_CHARS)
+            text = text[:MAX_CHARS]
+
         logger.info("Mengirim teks ke Ollama untuk ekstraksi PO (file: %s, %d karakter)",
                     filename, len(text))
 
@@ -238,7 +236,7 @@ class POParser:
             ) from exc
 
         raw_output = response.content
-        logger.debug("Raw output Ollama (%d chars): %.300s...", len(raw_output), raw_output)
+        logger.info("Raw output Ollama (300 char): %.300s", raw_output)
 
         return self._parse_llm_output(raw_output, filename)
 
@@ -249,7 +247,7 @@ class POParser:
     def _parse_llm_output(self, raw_output: str, filename: str) -> POExtractResponse:
         """
         Parse output teks LLM → POExtractResponse.
-        Mencoba beberapa strategi jika output tidak bersih.
+        Mencoba tiga strategi jika output tidak bersih.
         """
         # Strategi 1: parse langsung
         try:
@@ -261,12 +259,30 @@ class POParser:
         except (json.JSONDecodeError, ValidationError, TypeError):
             pass
 
-        # Strategi 2: ekstrak blok JSON terlebih dahulu
+        # Strategi 2: ekstrak blok JSON dari teks yang mengandung narasi
         try:
             json_block = _extract_json_block(raw_output)
             data = json.loads(json_block)
             result = POExtractResponse(**data)
             logger.info("Ekstraksi PO berhasil (strategi 2) — PO: %s, %d item",
+                        result.po_number, len(result.items))
+            return result
+        except (json.JSONDecodeError, ValidationError, TypeError, ValueError):
+            pass
+
+        # Strategi 3: bersihkan karakter noise yang umum dari model lokal
+        # (trailing koma, komentar // ..., newline dalam string)
+        try:
+            cleaned = raw_output.strip()
+            # Hapus komentar inline: // ...
+            cleaned = re.sub(r"//[^\n]*", "", cleaned)
+            # Hapus trailing comma sebelum } atau ]
+            cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+            # Ambil blok JSON
+            json_block = _extract_json_block(cleaned)
+            data = json.loads(json_block)
+            result = POExtractResponse(**data)
+            logger.info("Ekstraksi PO berhasil (strategi 3) — PO: %s, %d item",
                         result.po_number, len(result.items))
             return result
         except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
