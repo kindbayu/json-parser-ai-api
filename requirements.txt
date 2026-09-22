@@ -1,8 +1,10 @@
 # ============================================================
 # AI Engine API v3.0
 # Universal Document Intelligence — FastAPI + LangChain
-# Deploy: Railway / Render (free tier)
-# LLM: Groq (cloud) or Ollama (local)
+# Deploy: Railway / Render (free tier, 512 MB RAM)
+#
+# Embedding: chromadb built-in DefaultEmbeddingFunction
+# (onnxruntime-based, ~50 MB — no PyTorch, no sentence-transformers)
 # ============================================================
 
 # Web framework
@@ -20,11 +22,7 @@ langchain-community==0.3.24
 langchain-groq==0.3.2
 langchain-ollama==0.3.3
 
-# HuggingFace embeddings
-langchain-huggingface==0.1.2
-sentence-transformers==6.0.1
-
-# Vector database
+# Vector database (includes onnxruntime embedding, no PyTorch needed)
 chromadb==0.6.3
 
 # PDF processing

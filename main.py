@@ -56,17 +56,39 @@ async def lifespan(app: FastAPI):
         logger.info("Sample PDF tidak ditemukan — generating via data_gen.py...")
         import data_gen  # noqa: F401 — side effect: generates PDFs
 
-    # New services (spec.md)
-    from app.services.llm_factory import get_provider_name, probe_llm
-    from app.services.msds_rag import MSDSRagService
-    from app.services.po_parser import POParser
+    # ---------- Service inti ----------
+    # STARTUP HARUS TAHAN GAGAL: kalau salah satu service berat tidak bisa
+    # diinisialisasi (OOM / model tidak bisa diunduh / env kurang), aplikasi
+    # tetap harus hidup supaya /health, /docs, dan pesan errornya bisa dibaca.
+    # Crash di sini = Railway merespons 502 "Application failed to respond".
+    from app.services.llm_factory import (
+        describe_llm_error,
+        get_active_model_name,
+        get_provider,
+        get_provider_name,
+        probe_llm,
+    )
 
-    app.state.po_parser   = POParser()
-    app.state.msds_rag    = MSDSRagService()
+    # POParser ringan (hanya client LLM). Kegagalan konfigurasi (mis. API key
+    # hilang) dicatat sebagai error, lalu diulang saat endpoint dipanggil.
+    app.state.po_parser = None
+    try:
+        from app.services.po_parser import POParser
 
-    # Legacy services dibuat lazy via get_rag_service()/get_pdf_service():
-    # keduanya memuat HuggingFace embeddings + LLM di konstruktor sehingga
-    # cold start (Railway/Render free tier) jadi lambat tanpa perlu.
+        app.state.po_parser = POParser()
+    except Exception as exc:
+        logger.error(
+            "POParser TIDAK dapat diinisialisasi: %s | Endpoint "
+            "/api/v1/extract-po akan mengembalikan status 503 dengan detail ini.",
+            describe_llm_error(exc),
+        )
+
+    # MSDSRagService dan legacy services dibuat LAZY (lihat get_msds_rag() /
+    # get_rag_service() / get_pdf_service()). Konstruktornya memuat
+    # sentence-transformers + torch + model MiniLM (ratusan MB RAM); memuatnya
+    # saat startup membuat free tier Railway/Render lambat atau kehabisan
+    # memori sehingga aplikasi gagal merespons.
+    app.state.msds_rag    = None
     app.state.rag_service = None
     app.state.pdf_service = None
 
@@ -74,15 +96,21 @@ async def lifespan(app: FastAPI):
     # Ini yang membuat 404 model_not_found langsung terlihat di log deploy.
     llm_ok, llm_detail = await asyncio.to_thread(probe_llm)
     if llm_ok:
-        logger.info("✅ Semua services siap — LLM: %s (%s)", get_provider_name(), llm_detail)
+        logger.info("✅ Services siap — LLM: %s (%s)", get_provider_name(), llm_detail)
     else:
         logger.warning(
             "⚠️  LLM: %s — %s | Perbaiki variabel environment %s_MODEL di "
             "dashboard deployment (Railway/Render) lalu redeploy. "
             "Daftar model yang tersedia: GET /api/v1/llm/models",
             get_provider_name(), llm_detail,
-            os.getenv("LLM_PROVIDER", "groq").upper(),
+            get_provider().upper(),
         )
+
+    logger.info(
+        "🚀 Startup selesai — provider: %s, model: %s, po_parser_ready: %s "
+        "(msds_rag & legacy services dimuat saat pertama dipakai)",
+        get_provider(), get_active_model_name(), app.state.po_parser is not None,
+    )
 
     yield
     logger.info("🛑 AI Service API dimatikan.")
@@ -209,6 +237,47 @@ def get_pdf_service():
     return app.state.pdf_service
 
 
+def get_msds_rag():
+    """
+    Lazy-init MSDSRagService.
+
+    Konstruktornya memuat HuggingFaceEmbeddings (torch + model MiniLM, ratusan
+    MB RAM) dan meng-ingest dokumen ke ChromaDB. Itu sebabnya service ini baru
+    dibuat saat endpoint /api/v1/query-msds benar-benar dipanggil — supaya
+    startup di free tier tidak lambat / kehabisan memori.
+    """
+    if getattr(app.state, "msds_rag", None) is None:
+        from app.services.msds_rag import MSDSRagService
+
+        logger.info("Menginisialisasi MSDSRagService (lazy) — memuat embeddings...")
+        app.state.msds_rag = MSDSRagService()
+    return app.state.msds_rag
+
+
+def get_po_parser():
+    """
+    Ambil POParser; bila belum/tidak bisa dibuat, kembalikan error yang jelas.
+
+    Ini mencegah aplikasi mati total hanya karena konfigurasi LLM salah
+    (mis. GROQ_API_KEY hilang) — endpoint mengembalikan 503 + pesan
+    yang bisa ditindaklanjuti alih-alih 502 dari platform.
+    """
+    if getattr(app.state, "po_parser", None) is None:
+        from app.services.llm_factory import describe_llm_error
+        from app.services.po_parser import POParser
+
+        try:
+            app.state.po_parser = POParser()
+        except Exception as exc:
+            detail = describe_llm_error(exc)
+            logger.error("POParser tidak dapat diinisialisasi: %s", detail)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"LLM belum dikonfigurasi dengan benar. {detail}",
+            ) from exc
+    return app.state.po_parser
+
+
 # ---------------------------------------------------------------------------
 # Schemas — baru (spec.md)
 # ---------------------------------------------------------------------------
@@ -319,7 +388,12 @@ async def root():
     summary="Detail health check",
 )
 async def health_check():
-    """Status API + provider/model LLM yang aktif (tanpa network call)."""
+    """
+    Status API + provider/model LLM yang aktif.
+
+    Tanpa network call dan tanpa memuat service berat — endpoint ini harus
+    selalu cepat supaya healthcheck platform (Railway/Render) tidak timeout.
+    """
     from app.services.llm_factory import (
         get_active_model_name,
         get_provider,
@@ -327,11 +401,13 @@ async def health_check():
     )
 
     return {
-        "status":   "healthy",
-        "llm":      get_provider_name(),
-        "provider": get_provider(),
-        "model":    get_active_model_name(),
-        "docs":     "/docs",
+        "status":          "healthy",
+        "llm":             get_provider_name(),
+        "provider":        get_provider(),
+        "model":           get_active_model_name(),
+        "po_parser_ready": getattr(app.state, "po_parser", None) is not None,
+        "rag_ready":       getattr(app.state, "msds_rag", None) is not None,
+        "docs":            "/docs",
     }
 
 
@@ -458,7 +534,7 @@ async def extract_po(
         temp_path.write_bytes(pdf_bytes)
         logger.info("File temp tersimpan: %s", temp_path.name)
 
-        po_parser = app.state.po_parser
+        po_parser = get_po_parser()
         try:
             result = po_parser.extract_from_bytes(pdf_bytes, filename=filename)
         except ValueError as exc:
@@ -507,9 +583,11 @@ async def query_msds(request: MSDSQueryRequest):
     - *"How should this material be stored?"*
     - *"What PPE is required when handling this material?"*
     """
-    msds_rag = app.state.msds_rag
     try:
+        msds_rag = get_msds_rag()
         result = msds_rag.query(question=request.question, k=request.k)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("RAG query gagal: %s", request.question[:80])
         raise HTTPException(

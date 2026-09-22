@@ -56,6 +56,28 @@ These PDFs stay committed even though `.gitignore` ignores `*.pdf`, because
 
 ## Troubleshooting
 
+**`502 Application failed to respond` on Railway/Render** (every route, including
+`/health` and `/docs`)
+
+That is the *platform's* page, not FastAPI's — it means the container is not
+running. Check, in this order:
+
+1. **Deploy logs** (Railway → your service → Deployments → latest → *Deploy Logs*).
+   Look for a Python traceback in the startup lines. Common causes:
+   - `EnvironmentError: GROQ_API_KEY belum diset` → the variable is missing or misspelled in the dashboard.
+   - `Killed` / `Out of memory` → free-tier RAM exhausted.
+   The app is now built to survive both: it logs an `ERROR`/`WARNING` and keeps
+   serving `/health`, `/docs`, and `/api/v1/llm/models`.
+2. **Variables** (Railway → *Variables*): `LLM_PROVIDER=groq`, `GROQ_API_KEY=...`,
+   `GROQ_MODEL=openai/gpt-oss-120b`. Remove any stale/renamed duplicates.
+   `.env` is *not* deployed (gitignored) — the dashboard is the only source of config.
+3. **Verify the app is up:** `curl https://<app>/health` → `200` with `"status": "healthy"`.
+   `"po_parser_ready": false` means the LLM config is wrong (see #1) — the app is
+   alive and `/api/v1/extract-po` will answer `503` with the exact reason.
+4. **Startup is now lightweight:** HuggingFace embeddings (torch + MiniLM) and the
+   legacy services are loaded only on first use (`/api/v1/query-msds`, `/rag/*`),
+   so boot no longer needs several hundred MB of RAM just to answer `/health`.
+
 **`404 model_not_found` on Groq** — e.g. *"The model `llama-3.1-8b-instant`
 does not exist or you do not have access to it."*
 
