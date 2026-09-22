@@ -46,7 +46,7 @@ def get_llm(temperature: float = 0, **kwargs) -> BaseChatModel:
     ValueError
         Jika LLM_PROVIDER berisi nilai yang tidak dikenali.
     """
-    provider = os.getenv("LLM_PROVIDER", "ollama").lower().strip()
+    provider = os.getenv("LLM_PROVIDER", "groq").lower().strip()
 
     if provider == "groq":
         api_key = os.getenv("GROQ_API_KEY", "")
@@ -90,7 +90,7 @@ def get_llm(temperature: float = 0, **kwargs) -> BaseChatModel:
 
 def get_provider_name() -> str:
     """Kembalikan nama provider aktif untuk logging/health check."""
-    provider = os.getenv("LLM_PROVIDER", "ollama").lower().strip()
+    provider = os.getenv("LLM_PROVIDER", "groq").lower().strip()
     if provider == "groq":
         return f"Groq ({os.getenv('GROQ_MODEL', 'llama-3.1-8b-instant')})"
     return f"Ollama ({os.getenv('OLLAMA_MODEL', 'qwen2.5:1.5b')})"
