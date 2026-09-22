@@ -11,18 +11,52 @@ Make sure the server is running on port 8000:
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
 
 BASE_URL   = "http://127.0.0.1:8000"
-PO_PDF     = Path(__file__).parent / "data" / "sample_po.pdf"
-MSDS_PDF   = Path(__file__).parent / "data" / "sample_docs.pdf"
+
+
+def _first_existing(*paths: Path) -> Path:
+    """Pilih fixture pertama yang ada (nama fixture RAG punya dua varian)."""
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
+# Fixture fitur PO parser (file ini di-commit di repo, lihat .gitignore).
+PO_PDF     = _first_existing(Path(__file__).parent / "data" / "sample_po.pdf")
+# Fixture RAG: hasil generate data_gen.py, atau msds_sample.pdf yang sudah ada di repo.
+MSDS_PDF   = _first_existing(
+    Path(__file__).parent / "data" / "sample_docs.pdf",
+    Path(__file__).parent / "data" / "msds_sample.pdf",
+)
 PASS = "✅ PASS"
 FAIL = "❌ FAIL"
 SEP  = "─" * 60
+
+# Mendukung proteksi endpoint opsional: jika API_KEY diisi (sama seperti server),
+# header X-API-Key otomatis dikirim pada setiap request.
+API_KEY = os.getenv("API_KEY", "").strip()
+HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
+
+
+def api_get(url: str, **kwargs):
+    """requests.get + header X-API-Key (bila API_KEY diset)."""
+    return requests.get(url, headers=HEADERS, **kwargs)
+
+
+def api_post(url: str, **kwargs):
+    """requests.post + header X-API-Key (bila API_KEY diset)."""
+    return requests.post(url, headers=HEADERS, **kwargs)
 
 
 def print_result(name: str, ok: bool, detail: str = "") -> None:
@@ -55,7 +89,7 @@ def test_health() -> bool:
     print("TEST 1 — Health Check  GET /")
     print(SEP)
     try:
-        r = requests.get(f"{BASE_URL}/", timeout=5)
+        r = api_get(f"{BASE_URL}/", timeout=5)
         ok = r.status_code == 200 and r.json().get("status") == "ok"
         print_result("GET /", ok, pretty(r.json()))
         return ok
@@ -78,11 +112,11 @@ def test_extract_po() -> bool:
         return False
 
     print_result("File check", True, str(PO_PDF))
-    print("  ⏳ Mengirim PDF ke Ollama untuk ekstraksi... (bisa 10–60 detik)")
+    print("  ⏳ Mengirim PDF ke LLM untuk ekstraksi... (bisa 10–60 detik)")
 
     try:
         with open(PO_PDF, "rb") as f:
-            r = requests.post(
+            r = api_post(
                 f"{BASE_URL}/api/v1/extract-po",
                 files={"file": ("sample_po.pdf", f, "application/pdf")},
                 timeout=120,
@@ -93,7 +127,7 @@ def test_extract_po() -> bool:
         return False
     except requests.exceptions.Timeout:
         print_result("POST /api/v1/extract-po", False,
-                     "Timeout (>120s). Ollama mungkin lambat — coba lagi.")
+                     "Timeout (>120s). LLM mungkin lambat — coba lagi.")
         return False
 
     if r.status_code != 200:
@@ -140,10 +174,10 @@ def test_query_msds() -> bool:
     all_ok = True
     for i, question in enumerate(questions, 1):
         print(f"\n  Pertanyaan {i}: {question}")
-        print("  ⏳ Menunggu jawaban Ollama... (bisa 10–60 detik)")
+        print("  ⏳ Menunggu jawaban LLM... (bisa 10–60 detik)")
 
         try:
-            r = requests.post(
+            r = api_post(
                 f"{BASE_URL}/api/v1/query-msds",
                 json={"question": question, "k": 3},
                 timeout=120,
@@ -193,7 +227,7 @@ def test_pdf_parse() -> bool:
 
     try:
         with open(MSDS_PDF, "rb") as f:
-            r = requests.post(
+            r = api_post(
                 f"{BASE_URL}/pdf/parse",
                 files={"file": ("sample_docs.pdf", f, "application/pdf")},
                 timeout=15,
@@ -218,7 +252,7 @@ def test_list_collections() -> bool:
     print(SEP)
 
     try:
-        r = requests.get(f"{BASE_URL}/rag/collections", timeout=5)
+        r = api_get(f"{BASE_URL}/rag/collections", timeout=5)
         ok = r.status_code == 200
         print_result("GET /rag/collections", ok,
                      f"Collections: {r.json().get('collections', [])}")
@@ -226,6 +260,38 @@ def test_list_collections() -> bool:
     except Exception as e:
         print_result("GET /rag/collections", False, str(e))
         return False
+
+
+# ──────────────────────────────────────────────────────────
+# 6. LLM Models (diagnostik 404 model_not_found)
+# ──────────────────────────────────────────────────────────
+def test_llm_models() -> bool:
+    print(f"\n{SEP}")
+    print("TEST 6 — LLM Models  GET /api/v1/llm/models")
+    print(SEP)
+
+    try:
+        r = api_get(f"{BASE_URL}/api/v1/llm/models", timeout=30)
+    except Exception as e:
+        print_result("GET /api/v1/llm/models", False, str(e))
+        return False
+
+    if r.status_code != 200:
+        print_result("GET /api/v1/llm/models", False,
+                     f"HTTP {r.status_code}: {r.text[:300]}")
+        return False
+
+    data    = r.json()
+    ok      = bool(data.get("model_available"))
+    detail  = data.get("detail", "")
+
+    print_result("GET /api/v1/llm/models", ok)
+    print(f"       Provider  : {data.get('provider')}")
+    print(f"       Model     : {data.get('configured_model')}")
+    print(f"       Detail    : {detail}")
+    print(f"       Available : {', '.join(data.get('available_models', []))[:300]}")
+
+    return ok
 
 
 # ──────────────────────────────────────────────────────────
@@ -240,6 +306,7 @@ def main() -> None:
     start = time.time()
 
     results = {
+        "LLM Models"         : test_llm_models(),
         "Health Check"       : test_health(),
         "PDF Parse (legacy)" : test_pdf_parse(),
         "List Collections"   : test_list_collections(),

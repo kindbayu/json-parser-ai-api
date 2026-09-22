@@ -1,0 +1,4 @@
+# Tambahan untuk development/testing (bukan kebutuhan runtime).
+# Install: pip install -r requirements-dev.txt
+-r requirements.txt
+requests==2.32.3

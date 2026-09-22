@@ -10,6 +10,7 @@ Universal FastAPI entry point:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -56,21 +57,33 @@ async def lifespan(app: FastAPI):
         import data_gen  # noqa: F401 — side effect: generates PDFs
 
     # New services (spec.md)
+    from app.services.llm_factory import get_provider_name, probe_llm
     from app.services.msds_rag import MSDSRagService
     from app.services.po_parser import POParser
-    from app.services.llm_factory import get_provider_name
 
     app.state.po_parser   = POParser()
     app.state.msds_rag    = MSDSRagService()
 
-    # Legacy services
-    from services.pdf_service import PDFService
-    from services.rag_service import RAGService
+    # Legacy services dibuat lazy via get_rag_service()/get_pdf_service():
+    # keduanya memuat HuggingFace embeddings + LLM di konstruktor sehingga
+    # cold start (Railway/Render free tier) jadi lambat tanpa perlu.
+    app.state.rag_service = None
+    app.state.pdf_service = None
 
-    app.state.rag_service = RAGService()
-    app.state.pdf_service = PDFService()
+    # Cek (non-fatal) apakah model LLM yang dikonfigurasi benar-benar ada.
+    # Ini yang membuat 404 model_not_found langsung terlihat di log deploy.
+    llm_ok, llm_detail = await asyncio.to_thread(probe_llm)
+    if llm_ok:
+        logger.info("✅ Semua services siap — LLM: %s (%s)", get_provider_name(), llm_detail)
+    else:
+        logger.warning(
+            "⚠️  LLM: %s — %s | Perbaiki variabel environment %s_MODEL di "
+            "dashboard deployment (Railway/Render) lalu redeploy. "
+            "Daftar model yang tersedia: GET /api/v1/llm/models",
+            get_provider_name(), llm_detail,
+            os.getenv("LLM_PROVIDER", "groq").upper(),
+        )
 
-    logger.info("✅ Semua services siap — LLM: %s", get_provider_name())
     yield
     logger.info("🛑 AI Service API dimatikan.")
 
@@ -144,6 +157,59 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 # ---------------------------------------------------------------------------
+# Optional API-key gate
+# Aktif HANYA jika env API_KEY diisi — jadi tidak mengubah perilaku saat ini.
+# Tujuan: melindungi kuota LLM gratis dari pemakaian liar.
+# ---------------------------------------------------------------------------
+
+API_KEY = os.getenv("API_KEY", "").strip()
+_API_KEY_EXEMPT_PATHS = {"/", "/health", "/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def api_key_guard(request: Request, call_next):
+    """
+    Tolak request tanpa header `X-API-Key` yang benar.
+
+    Endpoint health & dokumentasi selalu terbuka agar healthcheck platform
+    dan Swagger tetap bisa diakses.
+    """
+    if API_KEY and request.url.path not in _API_KEY_EXEMPT_PATHS:
+        if request.headers.get("X-API-Key") != API_KEY:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Header X-API-Key tidak ada atau tidak valid."},
+            )
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Legacy services — lazy accessors
+# RAGService memuat HuggingFace embeddings + LLM, jadi dibuat saat pertama
+# dipakai saja (performa cold start / RAM free tier).
+# ---------------------------------------------------------------------------
+
+def get_rag_service():
+    """Lazy-init legacy RAGService."""
+    if getattr(app.state, "rag_service", None) is None:
+        from services.rag_service import RAGService
+
+        logger.info("Menginisialisasi legacy RAGService (lazy)...")
+        app.state.rag_service = RAGService()
+    return app.state.rag_service
+
+
+def get_pdf_service():
+    """Lazy-init legacy PDFService (ringan: pypdf + reportlab)."""
+    if getattr(app.state, "pdf_service", None) is None:
+        from services.pdf_service import PDFService
+
+        logger.info("Menginisialisasi legacy PDFService (lazy)...")
+        app.state.pdf_service = PDFService()
+    return app.state.pdf_service
+
+
+# ---------------------------------------------------------------------------
 # Schemas — baru (spec.md)
 # ---------------------------------------------------------------------------
 
@@ -187,6 +253,16 @@ class SourceDocumentOut(BaseModel):
 class MSDSQueryResponse(BaseModel):
     answer:           str
     source_documents: list[SourceDocumentOut]
+
+
+class LLMModelsResponse(BaseModel):
+    """Diagnostik model LLM yang benar-benar dapat diakses API key."""
+
+    provider:         str
+    configured_model: str
+    model_available:  bool
+    available_models: list[str]
+    detail:           str
 
 
 # ---------------------------------------------------------------------------
@@ -243,12 +319,77 @@ async def root():
     summary="Detail health check",
 )
 async def health_check():
-    from app.services.llm_factory import get_provider_name
+    """Status API + provider/model LLM yang aktif (tanpa network call)."""
+    from app.services.llm_factory import (
+        get_active_model_name,
+        get_provider,
+        get_provider_name,
+    )
+
     return {
         "status":   "healthy",
         "llm":      get_provider_name(),
-        "provider": os.getenv("LLM_PROVIDER", "ollama"),
+        "provider": get_provider(),
+        "model":    get_active_model_name(),
+        "docs":     "/docs",
     }
+
+
+@app.get(
+    "/api/v1/llm/models",
+    response_model=LLMModelsResponse,
+    tags=["Health"],
+    summary="Model LLM yang benar-benar bisa diakses API key",
+    responses={
+        502: {"description": "Provider LLM tidak dapat dihubungi"},
+    },
+)
+async def llm_models():
+    """
+    Diagnostik model LLM.
+
+    Pakai endpoint ini saat muncul error **404 `model_not_found`**: nilai
+    `GROQ_MODEL` (atau `OLLAMA_MODEL`) pada environment deployment harus ada
+    di `available_models`.
+
+    Contoh kasus nyata: `llama-3.1-8b-instant` dan `llama-3.3-70b-versatile`
+    sudah dipindah Groq ke tier Enterprise, sehingga API key free menerima 404.
+    """
+    from app.services.llm_factory import (
+        get_active_model_name,
+        get_provider,
+        list_models,
+    )
+
+    provider = get_provider()
+    model    = get_active_model_name()
+
+    try:
+        available = await asyncio.to_thread(list_models)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gagal membaca daftar model {provider}: {exc}",
+        )
+
+    model_available = model in available
+    if model_available:
+        detail = f"Model '{model}' tersedia untuk provider {provider}."
+    else:
+        env_var = "GROQ_MODEL" if provider == "groq" else "OLLAMA_MODEL"
+        detail = (
+            f"Model '{model}' TIDAK tersedia untuk provider {provider}. "
+            f"Set variabel environment {env_var} ke salah satu nilai "
+            f"available_models, lalu redeploy."
+        )
+
+    return LLMModelsResponse(
+        provider=provider,
+        configured_model=model,
+        model_available=model_available,
+        available_models=available,
+        detail=detail,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -410,8 +551,8 @@ async def ingest_pdf(
     if not pdf_bytes:
         raise HTTPException(status_code=400, detail="File kosong.")
 
-    pdf_service = app.state.pdf_service
-    rag_service = app.state.rag_service
+    pdf_service = get_pdf_service()
+    rag_service = get_rag_service()
 
     documents = pdf_service.parse_pdf(pdf_bytes, source_name=file.filename)
     if not documents:
@@ -433,7 +574,7 @@ async def ingest_pdf(
 )
 async def query_rag(request: QueryRequest):
     """Tanya jawab terhadap koleksi RAG generik."""
-    rag_service = app.state.rag_service
+    rag_service = get_rag_service()
     try:
         result = rag_service.query(
             question=request.question,
@@ -454,7 +595,7 @@ async def query_rag(request: QueryRequest):
 async def list_collections():
     """Tampilkan semua koleksi yang tersimpan di ChromaDB."""
     return CollectionListResponse(
-        collections=app.state.rag_service.list_collections()
+        collections=get_rag_service().list_collections()
     )
 
 
@@ -466,7 +607,7 @@ async def list_collections():
 async def delete_collection(collection_name: str):
     """Hapus koleksi ChromaDB berdasarkan nama."""
     try:
-        app.state.rag_service.delete_collection(collection_name)
+        get_rag_service().delete_collection(collection_name)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"Koleksi tidak ditemukan: {exc}")
     return {"message": f"Koleksi '{collection_name}' berhasil dihapus."}
@@ -490,7 +631,7 @@ async def parse_pdf(file: UploadFile = File(...)):
     if not pdf_bytes:
         raise HTTPException(status_code=400, detail="File kosong.")
 
-    pdf_service = app.state.pdf_service
+    pdf_service = get_pdf_service()
     metadata    = pdf_service.get_pdf_metadata(pdf_bytes)
     documents   = pdf_service.parse_pdf(pdf_bytes, source_name=file.filename)
 
@@ -512,7 +653,7 @@ async def parse_pdf(file: UploadFile = File(...)):
 async def generate_pdf(request: PDFGenerateRequest):
     """Buat file PDF dari judul dan konten teks, kembalikan sebagai file unduhan."""
     try:
-        pdf_bytes = app.state.pdf_service.generate_pdf(
+        pdf_bytes = get_pdf_service().generate_pdf(
             title=request.title, content=request.content
         )
     except Exception as exc:

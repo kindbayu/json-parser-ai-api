@@ -39,7 +39,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import PromptTemplate
 from pypdf import PdfReader
-from app.services.llm_factory import get_llm, get_provider_name
+from app.services.llm_factory import describe_llm_error, get_llm, get_provider_name
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -194,10 +194,9 @@ class MSDSRagService:
         try:
             result = qa_chain.invoke({"query": question})
         except Exception as exc:
-            raise ConnectionError(
-                f"Failed to get answer from LLM. "
-                f"Check LLM_PROVIDER configuration. Detail: {exc}"
-            ) from exc
+            detail = describe_llm_error(exc)
+            logger.error("LLM gagal menjawab query: %s", detail)
+            raise ConnectionError(detail) from exc
 
         source_docs: list[SourceDocument] = [
             SourceDocument(content=doc.page_content, metadata=doc.metadata)

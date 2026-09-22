@@ -14,7 +14,11 @@ build/
 # Data — ChromaDB dan file temp tidak perlu di-commit
 data/chroma_db/
 temp/
+
+# PDF: abaikan PDF di luar data/, TAPI semua PDF di data/ adalah test fixture
+# (mis. sample_po.pdf untuk fitur PO parser) sehingga tetap di-commit.
 *.pdf
+!data/*.pdf
 
 # IDE
 .vscode/

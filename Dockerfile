@@ -29,4 +29,5 @@ RUN python data_gen.py
 EXPOSE 7860
 
 # Start server
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+# Railway/Render mengirim $PORT; Docker/HF Spaces default ke 7860.
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}"]

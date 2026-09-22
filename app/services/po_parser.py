@@ -7,13 +7,13 @@ Stack: LLM via factory (Groq or Ollama) — free, no paid API required
 Alur kerja:
   1. Terima bytes PDF dari caller
   2. Ekstrak seluruh teks per halaman menggunakan pypdf
-  3. Kirim teks ke ChatOllama dengan prompt JSON yang ketat
+  3. Kirim teks ke LLM aktif (Groq atau Ollama — lihat llm_factory) dengan prompt JSON yang ketat
   4. Parse output teks → POExtractResponse via Pydantic v2
 
 Catatan:
-  ChatOllama tidak mendukung .with_structured_output() seperti OpenAI.
-  Solusi: prompt engineering + JSON extraction manual dengan fallback
-  yang robust untuk menangani variasi output model lokal.
+  Perbedaan dukungan structured output antar provider (dan model reasoning)
+  membuat prompt engineering + ekstraksi JSON manual lebih portabel:
+  output di-parse dengan tiga strategi fallback yang robust.
 
 Dependensi:
   langchain-community (ChatOllama), pypdf, pydantic v2, python-dotenv
@@ -29,11 +29,10 @@ import re
 from typing import Optional
 
 from dotenv import load_dotenv
-from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, ValidationError
 from pypdf import PdfReader
-from app.services.llm_factory import get_llm, get_provider_name
+from app.services.llm_factory import describe_llm_error, get_llm, get_provider_name
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -161,10 +160,11 @@ def _extract_json_block(text: str) -> str:
 
 class POParser:
     """
-    Mengekstrak data terstruktur dari PDF Purchase Order menggunakan
-    ChatOllama (llama3.2) + prompt engineering + Pydantic v2 parsing.
+    Mengekstrak data terstruktur dari PDF Purchase Order menggunakan LLM aktif
+    (Groq atau Ollama) + prompt engineering + Pydantic v2 parsing.
 
-    Tidak membutuhkan API key berbayar — berjalan sepenuhnya secara lokal.
+    Provider dan model dipilih lewat environment (LLM_PROVIDER dan
+    GROQ_MODEL / OLLAMA_MODEL) tanpa mengubah kode ini.
     """
 
     def __init__(self) -> None:
@@ -218,8 +218,8 @@ class POParser:
                         len(text), MAX_CHARS)
             text = text[:MAX_CHARS]
 
-        logger.info("Mengirim teks ke Ollama untuk ekstraksi PO (file: %s, %d karakter)",
-                    filename, len(text))
+        logger.info("Mengirim teks ke LLM (%s) untuk ekstraksi PO (file: %s, %d karakter)",
+                    get_provider_name(), filename, len(text))
 
         messages = [
             SystemMessage(content=_SYSTEM_PROMPT),
@@ -229,13 +229,12 @@ class POParser:
         try:
             response = self._llm.invoke(messages)
         except Exception as exc:
-            raise ConnectionError(
-                f"Failed to get a response from the LLM. "
-                f"Check your LLM_PROVIDER and API key configuration. Detail: {exc}"
-            ) from exc
+            detail = describe_llm_error(exc)
+            logger.error("LLM gagal memproses '%s': %s", filename, detail)
+            raise ConnectionError(detail) from exc
 
         raw_output = response.content
-        logger.info("Raw output Ollama (300 char): %.300s", raw_output)
+        logger.info("Raw output LLM (300 char): %.300s", raw_output)
 
         return self._parse_llm_output(raw_output, filename)
 
