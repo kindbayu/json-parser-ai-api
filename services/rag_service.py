@@ -31,11 +31,18 @@ class RAGService:
         logger.info("RAGService (legacy) — llm: %s", get_provider_name())
 
         # Use in-memory on Railway, persistent locally
-        if os.getenv("RAILWAY_ENVIRONMENT"):
+        is_railway = bool(
+            os.getenv("RAILWAY_ENVIRONMENT_NAME") or
+            os.getenv("RAILWAY_ENVIRONMENT") or
+            os.getenv("RAILWAY_PROJECT_ID")
+        )
+        if is_railway:
             self._client = chromadb.EphemeralClient()
+            logger.info("ChromaDB: in-memory (Railway mode)")
         else:
             os.makedirs(chroma_dir, exist_ok=True)
             self._client = chromadb.PersistentClient(path=chroma_dir)
+            logger.info("ChromaDB: persistent @ %s", chroma_dir)
 
         self._ef = embedding_functions.DefaultEmbeddingFunction()
         self.llm = get_llm(temperature=0.2)

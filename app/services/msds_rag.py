@@ -226,18 +226,21 @@ class MSDSRagService:
     ) -> None:
         self._pdf_path = Path(pdf_path or self.DEFAULT_PDF_PATH)
 
-        # ChromaDB in-memory client — works on Railway ephemeral filesystem
-        # For local dev with persistence, swap to PersistentClient
-        chroma_dir = os.getenv("CHROMA_PERSIST_DIRECTORY", "")
-        if chroma_dir and not os.getenv("RAILWAY_ENVIRONMENT"):
-            # Local: use persistent storage
+        # Use in-memory on Railway, persistent locally
+        # Railway injects RAILWAY_ENVIRONMENT_NAME automatically
+        is_railway = bool(
+            os.getenv("RAILWAY_ENVIRONMENT_NAME") or
+            os.getenv("RAILWAY_ENVIRONMENT") or
+            os.getenv("RAILWAY_PROJECT_ID")
+        )
+        if is_railway:
+            self._chroma_client = chromadb.EphemeralClient()
+            logger.info("ChromaDB: in-memory (Railway mode)")
+        else:
+            chroma_dir = os.getenv("CHROMA_PERSIST_DIRECTORY", str(self.DEFAULT_CHROMA_DIR))
             Path(chroma_dir).mkdir(parents=True, exist_ok=True)
             self._chroma_client = chromadb.PersistentClient(path=chroma_dir)
             logger.info("ChromaDB: persistent @ %s", chroma_dir)
-        else:
-            # Railway / CI: use in-memory (no filesystem dependency)
-            self._chroma_client = chromadb.EphemeralClient()
-            logger.info("ChromaDB: in-memory (Railway mode)")
 
         # ChromaDB default embedding function (onnxruntime, no PyTorch needed)
         self._ef = embedding_functions.DefaultEmbeddingFunction()
