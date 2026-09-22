@@ -230,9 +230,8 @@ class POParser:
             response = self._llm.invoke(messages)
         except Exception as exc:
             raise ConnectionError(
-                f"Tidak dapat terhubung ke Ollama. "
-                f"Pastikan Ollama berjalan (ollama serve) dan model '{self._llm.model}' "
-                f"sudah di-pull (ollama pull {self._llm.model}). Detail: {exc}"
+                f"Failed to get a response from the LLM. "
+                f"Check your LLM_PROVIDER and API key configuration. Detail: {exc}"
             ) from exc
 
         raw_output = response.content
